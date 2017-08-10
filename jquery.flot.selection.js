@@ -6,10 +6,12 @@ Licensed under the MIT license.
 The plugin supports these options:
 
 selection: {
-	mode: null or "x" or "y" or "xy",
-	color: color,
-	shape: "round" or "miter" or "bevel",
-	minSize: number of pixels
+    mode: null or "x" or "y" or "xy",
+    color: color,
+    shape: "round" or "miter" or "bevel",
+    minSize: number of pixels
+    touch: true or false
+    tapCallback: function to call if selection is less than minSize
 }
 
 Selection support is enabled by setting the mode to one of "x", "y" or "xy".
@@ -29,15 +31,19 @@ minute, but rather 1 pixel. Note also that setting "minSize" to 0 will prevent
 "plotunselected" events from being fired when the user clicks the mouse without
 dragging.
 
+"touch" is a boolean. Set true for touch event support, false for mouse events
+
+tapCallback: function to call with touch events if the user taps the screen
+
 When selection support is enabled, a "plotselected" event will be emitted on
 the DOM element you passed into the plot function. The event handler gets a
 parameter with the ranges selected on the axes, like this:
 
-	placeholder.bind( "plotselected", function( event, ranges ) {
-		alert("You selected " + ranges.xaxis.from + " to " + ranges.xaxis.to)
-		// similar for yaxis - with multiple axes, the extra ones are in
-		// x2axis, x3axis, ...
-	});
+    placeholder.bind( "plotselected", function( event, ranges ) {
+        alert("You selected " + ranges.xaxis.from + " to " + ranges.xaxis.to)
+        // similar for yaxis - with multiple axes, the extra ones are in
+        // x2axis, x3axis, ...
+    });
 
 The "plotselected" event is only fired when the user has finished making the
 selection. A "plotselecting" event is fired during the process with the same
@@ -58,7 +64,7 @@ The plugin allso adds the following methods to the plot object:
   an yaxis range and both xaxis and yaxis if the selection mode is "xy", like
   this:
 
-	setSelection({ xaxis: { from: 0, to: 10 }, yaxis: { from: 40, to: 60 } });
+    setSelection({ xaxis: { from: 0, to: 10 }, yaxis: { from: 40, to: 60 } });
 
   setSelection will trigger the "plotselected" event when called. If you don't
   want that to happen, e.g. if you're inside a "plotselected" handler, pass
@@ -94,19 +100,19 @@ The plugin allso adds the following methods to the plot object:
         var savedhandlers = {};
 
         var mouseUpHandler = null;
-        
+
         function onMouseMove(e) {
             if (selection.active) {
-                updateSelection(e);
-                
+                updateSelection(e.originalEvent);
+
                 plot.getPlaceholder().trigger("plotselecting", [ getSelection() ]);
             }
         }
 
         function onMouseDown(e) {
-            if (e.which != 1)  // only accept left-click
+            if (e.which > 1)
                 return;
-            
+
             // cancel out any text selections
             document.body.focus();
 
@@ -120,20 +126,21 @@ The plugin allso adds the following methods to the plot object:
                 document.ondrag = function () { return false; };
             }
 
-            setSelectionPos(selection.first, e);
+            setSelectionPos(selection.first, e.originalEvent);
 
             selection.active = true;
 
             // this is a bit silly, but we have to use a closure to be
             // able to whack the same handler again
             mouseUpHandler = function (e) { onMouseUp(e); };
-            
+
+            $(document).one("touchend", mouseUpHandler);
             $(document).one("mouseup", mouseUpHandler);
         }
 
         function onMouseUp(e) {
             mouseUpHandler = null;
-            
+
             // revert drag stuff for old-school browsers
             if (document.onselectstart !== undefined)
                 document.onselectstart = savedhandlers.onselectstart;
@@ -142,11 +149,10 @@ The plugin allso adds the following methods to the plot object:
 
             // no more dragging
             selection.active = false;
-            updateSelection(e);
+            updateSelection(e.originalEvent);
 
-            if (selectionIsSane())
-                triggerSelectedEvent();
-            else {
+            triggerSelectedEvent();
+            if (!selectionIsSane()) {
                 // this counts as a clear
                 plot.getPlaceholder().trigger("plotunselected", [ ]);
                 plot.getPlaceholder().trigger("plotselecting", [ null ]);
@@ -158,13 +164,13 @@ The plugin allso adds the following methods to the plot object:
         function getSelection() {
             if (!selectionIsSane())
                 return null;
-            
+
             if (!selection.show) return null;
 
             var r = {}, c1 = selection.first, c2 = selection.second;
             $.each(plot.getAxes(), function (name, axis) {
                 if (axis.used) {
-                    var p1 = axis.c2p(c1[axis.direction]), p2 = axis.c2p(c2[axis.direction]); 
+                    var p1 = axis.c2p(c1[axis.direction]), p2 = axis.c2p(c2[axis.direction]);
                     r[name] = { from: Math.min(p1, p2), to: Math.max(p1, p2) };
                 }
             });
@@ -173,6 +179,12 @@ The plugin allso adds the following methods to the plot object:
 
         function triggerSelectedEvent() {
             var r = getSelection();
+
+            // If the selection is below minimum size, call the invalid selection callback
+            if (r === null) {
+              plot.getOptions().selection.tapCallback();
+              return;
+            }
 
             plot.getPlaceholder().trigger("plotselected", [ r ]);
 
@@ -189,8 +201,14 @@ The plugin allso adds the following methods to the plot object:
             var o = plot.getOptions();
             var offset = plot.getPlaceholder().offset();
             var plotOffset = plot.getPlotOffset();
-            pos.x = clamp(0, e.pageX - offset.left - plotOffset.left, plot.width());
-            pos.y = clamp(0, e.pageY - offset.top - plotOffset.top, plot.height());
+
+            if(e.targetTouches) {
+                pos.x = clamp(0, e.targetTouches[0].pageX - offset.left - plotOffset.left, plot.width());
+                pos.y = clamp(0, e.targetTouches[0].pageY - offset.top - plotOffset.top, plot.height());
+            } else {
+                pos.x = clamp(0, e.pageX - offset.left - plotOffset.left, plot.width());
+                pos.y = clamp(0, e.pageY - offset.top - plotOffset.top, plot.height());
+            }
 
             if (o.selection.mode == "y")
                 pos.x = pos == selection.first ? 0 : plot.width();
@@ -200,8 +218,9 @@ The plugin allso adds the following methods to the plot object:
         }
 
         function updateSelection(pos) {
-            if (pos.pageX == null)
+            if (typeof pos.targetTouches !== 'undefined' && pos.targetTouches.length === 0) {
                 return;
+            }
 
             setSelectionPos(selection.second, pos);
             if (selectionIsSane()) {
@@ -252,10 +271,10 @@ The plugin allso adds the following methods to the plot object:
                 from = to;
                 to = tmp;
             }
-            
+
             return { from: from, to: to, axis: axis };
         }
-        
+
         function setSelection(ranges, preventEvent) {
             var axis, range, o = plot.getOptions();
 
@@ -289,8 +308,9 @@ The plugin allso adds the following methods to the plot object:
 
         function selectionIsSane() {
             var minSize = plot.getOptions().selection.minSize;
-            return Math.abs(selection.second.x - selection.first.x) >= minSize &&
-                Math.abs(selection.second.y - selection.first.y) >= minSize;
+            return selection.second.x >= 0 && selection.second.y >= 0
+                && Math.abs(selection.second.x - selection.first.x) >= minSize
+                && Math.abs(selection.second.y - selection.first.y) >= minSize;
         }
 
         plot.clearSelection = clearSelection;
@@ -302,6 +322,8 @@ The plugin allso adds the following methods to the plot object:
             if (o.selection.mode != null) {
                 eventHolder.mousemove(onMouseMove);
                 eventHolder.mousedown(onMouseDown);
+                eventHolder.bind('touchmove', onMouseMove);
+                eventHolder.bind('touchstart', onMouseDown);
             }
         });
 
@@ -333,13 +355,16 @@ The plugin allso adds the following methods to the plot object:
                 ctx.restore();
             }
         });
-        
+
         plot.hooks.shutdown.push(function (plot, eventHolder) {
             eventHolder.unbind("mousemove", onMouseMove);
             eventHolder.unbind("mousedown", onMouseDown);
-            
+            eventHolder.unbind("touchmove", onMouseMove);
+            eventHolder.unbind("touchstart", onMouseDown);
+
             if (mouseUpHandler)
                 $(document).unbind("mouseup", mouseUpHandler);
+                $(document).unbind("touchend", mouseUpHandler);
         });
 
     }
@@ -351,10 +376,12 @@ The plugin allso adds the following methods to the plot object:
                 mode: null, // one of null, "x", "y" or "xy"
                 color: "#e8cfac",
                 shape: "round", // one of "round", "miter", or "bevel"
-                minSize: 5 // minimum number of pixels
-            }
+                minSize: 5, // minimum number of pixels
+                touch: false,
+                tapCallback: function() {}
+            },
         },
         name: 'selection',
-        version: '1.1'
+        version: '1.2'
     });
 })(jQuery);
